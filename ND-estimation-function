@@ -1,0 +1,173 @@
+#   input:  
+#   the design matrix XX (nn x dd), a weight matrix WW (nn x nn), (nn) observations yy
+#   the basic comparison matrix, CC,  for defining T^C_\r    (default = WW)
+#   the number of permutation replicates, nreppi             (default = 1000)
+#   the fraction of the range of rho which is used for optimization, thresh      (default = 0.95)
+ 
+
+# output:   $rhohat,           an estimate of rho
+#           $permutationMean,  the mean of nreppi values of rhohat for the permuted data 
+#           $permutationSD,    the SE of nreppi values of rhohat for the permuted data  
+#           $permutationRhohats  the nreppi values of rhohat for the permuted data
+#
+
+
+NetDistEst <- function(XX,WW,yy,CC = WW, nreppi = 100, thresh = 0.95) {
+# nreppi <- 1000
+nn <- length(yy)
+nn1 <- nrow(XX)
+nn2 <- nrow(WW)
+if (nn1 != nn){
+cat("X and y have different numbers of rows \n")
+}
+if (nn2 != nn){
+cat("W and y have different numbers of rows \n")
+}
+dd <- ncol(XX)
+
+bone <- rep(1,nn)
+II <- diag(bone)
+
+
+EV <- eigen(WW, symmetric = FALSE, only.values = TRUE)
+rrW <- abs(EV$values[1])
+if (rrW <= 0.000001) {
+cat("spectral radius of W is very small \n")
+} 
+
+
+
+####################################################
+#
+#   function to calculate ( T_\r(y) + \s^2_\r(y) \Tr(H_\r C) )^2  
+#   for given values y = yyy and \r = rrr, using WW and XX
+# 
+
+fnND <- function(rrr,yyy){
+
+ # calculate K_\r
+
+Krho <- II - rrr*WW     #  WW is the weight matrix
+yrho <- Krho %*% yyy    #  then no more use of rrr or yyy in what follows
+
+ # calculating H_\r
+
+KrhoX <- Krho %*% XX    #  XX is the design matrix
+tKrhoX <- t(KrhoX)
+KXKX <- tKrhoX %*% KrhoX
+KXKXmi <- solve(KXKX)
+Hrho <- KrhoX %*%KXKXmi %*% tKrhoX
+
+
+epsrho0 <- (II - Hrho) %*% yrho        # these are the estimates of the innovations nu0, needed in the T statistic
+                                       # (I-H_\r)K_\r y  
+
+
+# calculate T^C_\r and \hat\s^2_\r, when the matrix used to define T^C_\r is CC
+
+Trho <- t(epsrho0) %*% CC %*% epsrho0  # T_\r(y)
+
+shat2 <- t(epsrho0) %*% epsrho0 / nn   # the estimated variance of an innovation:  \hat\s^2_\r(y)
+
+bias <- sum(diag(Hrho %*% CC)) * shat2 # the bias correction, to go with T_\r(y)
+
+
+#  the value of the quantity that should be minimized by choice of \r
+
+VV <- Trho + bias    # the value of T_\r(y) + \s^2_\r(y) \Tr(H_\r C) for rho = rrr and y = yyy
+VV2 <- VV * VV       # ( we minimize the square of the value ) 
+
+return(VV2)
+}
+
+#######################################################
+#
+#   make fnND into a one dimensional function to optimize, using the real data yy
+#
+
+
+fnNDyy <- function(rrr){
+VV2yy <- fnND(rrr,yy)
+return(VV2yy)
+}
+
+###########################################################
+#
+# find the best estimate of rho from model and network data, using our CC procedure 
+
+optND <- optimize(fnNDyy,c(- thresh / rrW,thresh / rrW))     
+
+rhohat <- optND$minimum
+
+
+########################################################
+#
+#   the permutation procedure:  permute the `independent' transformed residuals to give synthetic data yy(pi),
+#      and calculate the corresponding values of rhohat(pi)
+#
+
+ # calculate K_\rhohat for the estimate rhohat based on the real data
+
+Krhohat <- II - rhohat*WW     # gives K_rhohat;  WW is the weight matrix
+
+Kmihat <- solve(Krhohat)      # gives the inverse of K_rhohat
+
+
+ # calculating H_\rhohat
+
+KrhohatX <- Krhohat %*% XX                      #  XX is the design matrix
+tKrhohatX <- t(KrhohatX)
+KXKXhat <- tKrhohatX %*% KrhohatX
+KXKXmihat <- solve(KXKXhat)
+Hrhohat <- KrhohatX %*%KXKXmihat %*% tKrhohatX  # the projection H_rhohat
+
+
+KrhohatY <- Krhohat %*% yy                       #  K_rhohat yy  for the actual data yy
+
+epsrhohat0 <- (II - Hrhohat) %*% KrhohatY        # these are the estimates of the `innovations' nu0, 
+                                                # that are permuted to obtain synthetic data
+                                                #  
+
+###################################################
+#
+#  permutation assessment of variability of rhohat.
+#
+
+nuhat <- epsrhohat0                          # the nu-residuals (renamed)
+Xbetahat <- Kmihat %*% Hrhohat %*% KrhohatY   # the estimated model structure X betahat = K^{-1} H(KX) K y
+
+rhopi <- rep(0,nreppi)
+
+for (j in 1:nreppi){
+
+  nupi <- sample(nuhat)                      #  permutes the nu-residuals
+
+  epspi <- Kmihat %*% nupi                   #  calculates the permuted eps-residuals
+
+  ypi <- Xbetahat  +  epspi                  #  the new `permuted' data;  the model has \rho = rhohat
+
+#############################
+#
+#   make a one dimensional function to optimize. for the synthetic data
+#
+
+  fnNDypi <- function(rrr){
+    VV2ypi <- fnND(rrr,ypi)
+    return(VV2ypi)
+  }
+
+#######################################################
+
+  optNDpi <- optimize(fnNDypi,c(-thresh / rrW,thresh / rrW))     
+                                             # find the best estimate of rho from synthetic data
+
+  rhopi[j] <- optNDpi$minimum                # the j-th simulated approximation to rhohat
+}
+
+NDE <- list(rhohat,mean(rhopi),sd(rhopi),rhopi)
+names(NDE) <- c("rhohat","permutationMean","permutationSD","permutationRhohats")
+
+return(NDE)
+}
+
+
